@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   watch:
-    if: github.repository == 'YonghaoZhao722/trader-watch'
+    if: github.repository == 'YonghaoZhao722/watcher'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
