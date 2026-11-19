@@ -1,0 +1,38 @@
+name: watch
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      send_test:
+        description: Send a one-time ntfy test push
+        type: boolean
+        default: false
+
+concurrency:
+  group: trader-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    if: github.repository == 'YonghaoZhao722/trader-watch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: state.json
+          key: trader-state-${{ github.run_id }}
+          restore-keys: |
+            trader-state-
+      - name: Poll and notify
+        env:
+          KOPYON_KEY: ${{ secrets.KOPYON_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SEND_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test && '1' || '' }}
+        run: python3 watch.py

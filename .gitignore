@@ -1,0 +1,7 @@
+state.json
+events.jsonl
+watch.log
+ntfy_topic.txt
+.env
+*.secret
+__pycache__/
