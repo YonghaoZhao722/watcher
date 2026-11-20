@@ -2,6 +2,8 @@ name: watch
 
 on:
   schedule:
+    # Backup if the self-chain ever stops. A scheduled run exits early
+    # when another watch loop is already in progress or queued.
     - cron: "4-59/10 * * * *"
   workflow_dispatch:
     inputs:
@@ -10,18 +12,47 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: trader-watch
-  cancel-in-progress: false
-
 permissions:
   contents: read
+  actions: write
 
 jobs:
-  watch:
+  gate:
     if: github.repository == 'YonghaoZhao722/watcher'
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 2
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "non-schedule event; starting loop"
+            exit 0
+          fi
+          others=$(gh run list -R "${{ github.repository }}" --workflow watch.yml --limit 20 \
+            --json databaseId,status \
+            --jq "[.[] | select(.databaseId != ${{ github.run_id }} and (.status == \"in_progress\" or .status == \"queued\" or .status == \"waiting\" or .status == \"pending\" or .status == \"requested\"))] | length")
+          if [ "${others:-0}" -gt 0 ]; then
+            echo "Another watch run is in progress or queued; scheduled run exiting early"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No active loop; scheduled run will start a new chain"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  watch:
+    needs: gate
+    if: github.repository == 'YonghaoZhao722/watcher' && needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    concurrency:
+      group: trader-watch
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -30,9 +61,34 @@ jobs:
           key: trader-state-${{ github.run_id }}
           restore-keys: |
             trader-state-
-      - name: Poll and notify
+      - name: Poll every 10 minutes
         env:
           KOPYON_KEY: ${{ secrets.KOPYON_KEY }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           SEND_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test && '1' || '' }}
-        run: python3 watch.py
+        run: |
+          set -uo pipefail
+          fail=0
+          for i in $(seq 1 6); do
+            echo "=== iteration $i/6 $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            if [ "$i" -gt 1 ]; then
+              unset SEND_TEST
+            fi
+            if ! python3 watch.py; then
+              echo "iteration $i failed" >&2
+              fail=1
+            fi
+            if [ "$i" -lt 6 ]; then
+              echo "sleeping 600s until next poll"
+              sleep 600
+            fi
+          done
+          exit "$fail"
+      - name: Chain next run
+        if: ${{ always() && !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run watch.yml -R "${{ github.repository }}"
+          echo "dispatched next watch run"
